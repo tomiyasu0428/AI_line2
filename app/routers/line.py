@@ -1,6 +1,5 @@
 import os
 from fastapi import APIRouter, Request, BackgroundTasks
-from linebot.v3 import WebhookHandler
 from linebot.v3.webhooks import MessageEvent, PostbackEvent
 from linebot.v3.exceptions import InvalidSignatureError
 from linebot.v3.messaging import Configuration, ApiClient, MessagingApi, ReplyMessageRequest, TextMessage
@@ -8,8 +7,9 @@ from linebot.v3.webhooks.models import TextMessageContent
 from linebot.v3.webhook import WebhookParser
 
 from app.services.ai_processor import process_user_message
-from app.services.group_scheduler import find_available_times, create_voting_message, process_vote, close_voting
+from app.services.group_scheduler import process_vote, close_voting
 from app.services.google_calendar import check_user_auth_status
+
 
 router = APIRouter(prefix="/line", tags=["line"])
 
@@ -17,7 +17,6 @@ line_token = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "dummy_token")
 line_secret = os.getenv("LINE_CHANNEL_SECRET", "dummy_secret")
 
 configuration = Configuration(access_token=line_token)
-handler = WebhookHandler(line_secret)
 
 
 @router.post("/callback")
@@ -32,7 +31,7 @@ async def callback(request: Request, background_tasks: BackgroundTasks):
     print(f"Body length: {len(body_decode)} bytes")
     
     try:
-        # WebhookHandlerに処理を委譲する代わりに、イベントを解析して非同期処理
+        # イベントを解析して非同期処理
         parser = WebhookParser(line_secret)
         events = parser.parse(body_decode, signature)
         print(f"Successfully parsed {len(events)} events")
@@ -40,6 +39,9 @@ async def callback(request: Request, background_tasks: BackgroundTasks):
             if isinstance(event, MessageEvent) and isinstance(event.message, TextMessageContent):
                 # バックグラウンドタスクとしてメッセージ処理を実行
                 background_tasks.add_task(process_message_async, event)
+            elif isinstance(event, PostbackEvent):
+                # ポストバックイベントを処理
+                background_tasks.add_task(handle_postback, event)
     except InvalidSignatureError as e:
         print(f"Invalid signature error: {e}")
         # 署名エラーでも200を返す（LINEプラットフォームの要件）
@@ -52,6 +54,7 @@ async def callback(request: Request, background_tasks: BackgroundTasks):
     # 即座に200 OKを返す
     return {"message": "OK"}
 
+
 async def process_message_async(event):
     """メッセージを非同期で処理する"""
     try:
@@ -61,9 +64,11 @@ async def process_message_async(event):
         # ユーザーの認証状態を確認
         is_authenticated = check_user_auth_status(user_id)
         
-        if not is_authenticated and any(keyword in user_message for keyword in ["カレンダー", "予定", "会議", "ミーティング", "スケジュール"]):
+        if not is_authenticated and any(keyword in user_message for keyword in 
+                                       ["カレンダー", "予定", "会議", "ミーティング", "スケジュール"]):
             auth_url = f"{os.getenv('APP_BASE_URL')}/google/authorize?user_id={user_id}"
-            reply_text = f"Googleカレンダーへのアクセス許可が必要です。以下のリンクから認証を行ってください。\n{auth_url}"
+            reply_text = (f"Googleカレンダーへのアクセス許可が必要です。"
+                         f"以下のリンクから認証を行ってください。\n{auth_url}")
             with ApiClient(configuration) as api_client:
                 line_bot_api = MessagingApi(api_client)
                 reply_message_request = ReplyMessageRequest(
@@ -86,7 +91,8 @@ async def process_message_async(event):
                 line_bot_api = MessagingApi(api_client)
                 reply_message_request = ReplyMessageRequest(
                     reply_token=event.reply_token,
-                    messages=[TextMessage(text="こんにちは！カレンダーの予定を管理するには、「予定」「スケジュール」などのキーワードを含むメッセージを送ってください。")]
+                    messages=[TextMessage(text="こんにちは！カレンダーの予定を管理するには、"
+                                              "「予定」「スケジュール」などのキーワードを含むメッセージを送ってください。")]
                 )
                 line_bot_api.reply_message(reply_message_request)
     except Exception as e:
@@ -96,7 +102,8 @@ async def process_message_async(event):
                 line_bot_api = MessagingApi(api_client)
                 reply_message_request = ReplyMessageRequest(
                     reply_token=event.reply_token,
-                    messages=[TextMessage(text="申し訳ありません。メッセージ処理中にエラーが発生しました。後でもう一度お試しください。")]
+                    messages=[TextMessage(text="申し訳ありません。メッセージ処理中にエラーが発生しました。"
+                                              "後でもう一度お試しください。")]
                 )
                 line_bot_api.reply_message(reply_message_request)
         except Exception:
@@ -104,15 +111,8 @@ async def process_message_async(event):
             pass
 
 
-@handler.add(MessageEvent, message=TextMessageContent)
-def handle_message(event):
-    # この関数はWebhookHandlerから呼び出されるが、実際の処理は行わない
-    # 処理はcallbackエンドポイントで直接行う
-    pass
-
-
-@handler.add(PostbackEvent)
-def handle_postback(event):
+async def handle_postback(event):
+    """ポストバックイベントを処理する"""
     user_id = event.source.user_id
     postback_data = event.postback.data
 

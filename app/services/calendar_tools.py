@@ -182,16 +182,41 @@ def parse_date_tool(date_string: str) -> str:
     自然言語の日付文字列をISO形式 (RFC3339) の日付/時刻文字列に変換します。
     
     Args:
-        date_string: 変換する日付文字列 (例: '明日の午後3時', '来週の月曜日 10:00')
+        date_string: 変換する日付文字列 (例: '明日の午後3時', '来週の月曜日 10:00', '4月29日の0時')
     
     Returns:
         ISO形式 (RFC3339) の日付/時刻文字列 (例: '2023-06-01T15:00:00+09:00')
     """
     try:
         now = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=9)))
+        target_date = None
+        
+        # 特定の月日パターンを処理（例: 4月29日）
+        import re
+        month_day_pattern = re.compile(r'(\d+)月(\d+)日')
+        match = month_day_pattern.search(date_string)
+        
+        if match:
+            month = int(match.group(1))
+            day = int(match.group(2))
+            year = now.year
+            
+            # 指定された月日が過去の場合は来年と判断
+            if month < now.month or (month == now.month and day < now.day):
+                year += 1
+                
+            try:
+                target_date = datetime.datetime(
+                    year=year, 
+                    month=month, 
+                    day=day,
+                    tzinfo=datetime.timezone(datetime.timedelta(hours=9))
+                )
+            except ValueError as e:
+                return f"無効な日付です: {month}月{day}日 - {str(e)}"
         
         # 「今日」「明日」などの相対的な日付を処理
-        if "今日" in date_string:
+        elif "今日" in date_string:
             target_date = now
         elif "明日" in date_string:
             target_date = now + datetime.timedelta(days=1)
@@ -248,10 +273,19 @@ def parse_date_tool(date_string: str) -> str:
                 }
         else:
             # デフォルトは今日
-            target_date = now
+            if target_date is None:
+                target_date = now
         
         # 時間の処理
-        if "午前" in date_string or "朝" in date_string:
+        # 特定の時間パターンを処理（例: 0時、12時、15時30分）
+        time_pattern = re.compile(r'(\d+)時(?:(\d+)分)?')
+        time_match = time_pattern.search(date_string)
+        
+        if time_match:
+            hour = int(time_match.group(1))
+            minute = int(time_match.group(2)) if time_match.group(2) else 0
+            target_date = target_date.replace(hour=hour, minute=minute, second=0)
+        elif "午前" in date_string or "朝" in date_string:
             if "9時" in date_string or "9:00" in date_string:
                 target_date = target_date.replace(hour=9, minute=0, second=0)
             elif "10時" in date_string or "10:00" in date_string:
@@ -272,8 +306,9 @@ def parse_date_tool(date_string: str) -> str:
             else:
                 target_date = target_date.replace(hour=15, minute=0, second=0)
         else:
-            # デフォルトは午後3時
-            target_date = target_date.replace(hour=15, minute=0, second=0)
+            # デフォルトは午後3時（ただし、時間が既に設定されている場合は変更しない）
+            if "時" not in date_string and ":" not in date_string:
+                target_date = target_date.replace(hour=15, minute=0, second=0)
         
         return target_date.isoformat()
     except Exception as e:
