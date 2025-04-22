@@ -1,169 +1,150 @@
 import os
-import json
 import datetime
-import google.generativeai as genai
+from typing import Dict, Any, List
+from dotenv import load_dotenv
 
-from app.services.google_calendar import (
-    register_calendar_event,
-    get_calendar_events,
-    delete_calendar_event,
-    update_calendar_event
+# .env ファイルをロード (必ず ChatGoogleGenerativeAI 初期化より前に！)
+dotenv_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), '.env')
+load_dotenv(dotenv_path=dotenv_path, verbose=True)
+
+import google.generativeai as genai
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain.agents import AgentType, initialize_agent
+
+# Gemini API設定: APIキーを使用して認証
+if "GOOGLE_APPLICATION_CREDENTIALS" in os.environ:
+    del os.environ["GOOGLE_APPLICATION_CREDENTIALS"]  # 環境変数を完全に削除
+
+# 環境変数からAPIキーを取得
+api_key = os.getenv("GEMINI_API_KEY")
+if not api_key:
+    print("GEMINI_API_KEY が見つかりません。GOOGLE_API_KEY を試します。")
+    api_key = os.getenv("GOOGLE_API_KEY")
+
+# APIキーが取得できているか確認
+if not api_key:
+    print("--------------------------------------------------------------------")
+    print("エラー: GEMINI_API_KEY も GOOGLE_API_KEY も環境変数に見つかりません。")
+    print(f".env ファイルのパス: {dotenv_path}")
+    print("--------------------------------------------------------------------")
+    raise ValueError("API Key not found in environment variables. Check .env file and variable names.")
+else:
+    # キーの一部を表示して確認（全部表示しないように注意）
+    print(f"取得したAPIキーの最初の5文字: {api_key[:5]}...")
+    print("--------------------------------------------------------------------")
+
+# Gemini API設定
+genai.configure(api_key=api_key)
+
+# ツールのインポート
+from app.services.calendar_tools import (
+    create_event_tool,
+    get_events_tool,
+    update_event_tool,
+    delete_event_tool,
+    search_events_by_title_tool,
+    get_current_datetime_tool,
+    parse_date_tool
 )
 
-gemini_api_key = os.getenv("GEMINI_API_KEY")
-genai.configure(api_key=gemini_api_key)
+# ツールのリスト
+tools = [
+    create_event_tool,
+    get_events_tool,
+    update_event_tool,
+    delete_event_tool,
+    search_events_by_title_tool,
+    get_current_datetime_tool,
+    parse_date_tool
+]
 
-CALENDAR_PROMPT = """
-あなたは日本語のテキストから予定情報を抽出するAIアシスタントです。
-以下のユーザーの入力から予定に関する情報を抽出し、JSONフォーマットで出力してください。
+# プロンプトテンプレート
+prompt = ChatPromptTemplate.from_messages([
+    ("system", """あなたは日本語で会話するAIアシスタントで、ユーザーのGoogleカレンダーを管理します。
+ユーザーからの要望に応じて、適切なツールを使用してカレンダーの予定を作成、取得、更新、削除してください。
 
-ユーザー入力: {user_message}
+**あなたのタスク:**
+1. ユーザーの入力 (`input`) と、そのユーザーを識別する `user_id` を受け取ります。(`human` メッセージに `user_id:` として表示されます)
+2. カレンダーを操作する必要がある場合、以下のツールを使用します。
+   - `create_event_tool`
+   - `get_events_tool`
+   - `update_event_tool`
+   - `delete_event_tool`
+   - `search_events_by_title_tool`
+3. **重要:** これらのカレンダーツールを呼び出す際には、**必ず** `human` メッセージで提供された `user_id` をツールの **第一引数** として渡してください。例えば、`get_events_tool` を使う場合は `get_events_tool(user_id='<実際のユーザーID>', start_time='...', end_time='...')` のように呼び出す必要があります。
+4. 他のツール (`get_current_datetime_tool`, `parse_date_tool`) は `user_id` を必要としません。
+5. 必要な情報が不足している場合は、ユーザーに質問してください。
+6. 日付や時間の処理に関する重要なルール:
+   - 「今日」「明日」「明後日」などの相対的な日付表現は、`parse_date_tool`を使用して適切な日付に変換してください。
+   - 「今日の予定」「明日の予定」などの質問には、現在の日付から自動的に計算して回答してください。ユーザーに日付を尋ねる必要はありません。
+   - 日付が曖昧な場合のみ、具体的な日付をユーザーに尋ねてください。
+7. 処理結果を日本語で分かりやすく説明してください。
+8. 会話の文脈を理解し、一貫性のある応答を心がけてください。
+9. ユーザーの質問に対して、可能な限り1回の応答で完結するようにしてください。
 
-以下の形式でJSON出力してください:
-```
-{
-  "action": "create/read/update/delete", // 予定の作成/読み取り/更新/削除
-  "datetime_start": "YYYY-MM-DDTHH:MM:SS+09:00", // 日本時間のISO形式
-  "datetime_end": "YYYY-MM-DDTHH:MM:SS+09:00", // 日本時間のISO形式
-  "title": "予定のタイトル",
-  "location": "場所",
-  "description": "詳細説明"
-}
-```
+利用可能なツール:
+{tools}
 
-特定の時間が指定されていない場合は、以下のデフォルト値を使用:
-- 「今日」: 現在の日付
-- 「明日」: 現在の日付+1日
-- 時間が指定されていない場合: 
-  * 作成/更新の場合は、開始時間=現在時刻から1時間後の正時、終了時間=開始時間+1時間
-  * 読み取り/削除の場合は、開始時間=当日0時、終了時間=当日23:59
+ツール名リスト:
+{tool_names}
 
-読み取り操作の場合:
-- 「今日の予定」「今日何がある？」などの場合は、当日の全予定を返す
-- 「明日の予定」などの場合は、指定された日の全予定を返す
-- 「今週の予定」の場合は、今週の全予定を返す
+常に丁寧に対応してください。"""),
+    ("human", "user_id: {user_id}\ninput: {input}"),
+    ("ai", "{agent_scratchpad}")
+])
 
-更新/削除操作の場合:
-- まず特定の予定を特定できる情報（タイトル、日時など）が必要
-- 「明日の会議をキャンセル」のような場合、タイトルに「会議」を含む明日の予定を探す
+# LLMの初期化
+llm = ChatGoogleGenerativeAI(
+    model="gemini-2.5-flash-preview-04-17",
+    temperature=0,
+    google_api_key=api_key,  # APIキーを明示的に渡す
+    convert_system_message_to_human=True  # システムメッセージを人間のメッセージに変換（Geminiの互換性向上）
+)
 
-出力は必ずJSON形式のみにしてください。説明文は不要です。
-"""
+# エージェントの初期化
+agent_executor = initialize_agent(
+    tools,
+    llm,
+    agent=AgentType.STRUCTURED_CHAT_ZERO_SHOT_REACT_DESCRIPTION,
+    verbose=True,
+    handle_parsing_errors=True,
+    prompt=prompt,
+    max_iterations=3  # イテレーション数を減らして処理を高速化
+)
 
 def process_user_message(user_id: str, user_message: str) -> str:
-    """ユーザーのメッセージを処理し、適切な応答を返す"""
+    """エージェントを使用してユーザーのメッセージを処理し、適切な応答を返す"""
     try:
-        formatted_prompt = CALENDAR_PROMPT.format(user_message=user_message)
+        # ツール名のリストを作成
+        tool_names = [tool.name for tool in tools]
         
-        model = genai.GenerativeModel('gemini-2.0-flash')
-        response = model.generate_content(formatted_prompt)
+        # デバッグ情報を出力
+        print(f"処理するユーザーID: {user_id}")
         
-        response_text = response.text
-        print(f"Gemini response: {response_text}")  # デバッグ用
+        # ユーザーIDをエージェントに渡す
+        # ユーザーメッセージを修正して、正しいユーザーIDを明示的に含める
+        modified_message = f"以下のコマンドでは必ず user_id=\"{user_id}\" を使用してください。\n{user_message}"
         
-        # JSON部分を抽出する改善版
-        try:
-            # コードブロック内のJSONを探す
-            if "```" in response_text:
-                # コードブロックからJSONを抽出
-                code_blocks = response_text.split("```")
-                for block in code_blocks:
-                    if "{" in block and "}" in block:
-                        json_str = block.strip()
-                        if json_str.startswith("json"):
-                            json_str = json_str[4:].strip()
-                        parsed_data = json.loads(json_str)
-                        break
-                else:
-                    # コードブロック内にJSONが見つからない場合
-                    start_idx = response_text.find('{')
-                    end_idx = response_text.rfind('}') + 1
-                    if start_idx >= 0 and end_idx > start_idx:
-                        json_str = response_text[start_idx:end_idx]
-                        parsed_data = json.loads(json_str)
-                    else:
-                        raise ValueError("JSONが見つかりません")
-            else:
-                # コードブロックがない場合は直接JSONを探す
-                start_idx = response_text.find('{')
-                end_idx = response_text.rfind('}') + 1
-                if start_idx >= 0 and end_idx > start_idx:
-                    json_str = response_text[start_idx:end_idx]
-                    parsed_data = json.loads(json_str)
-                else:
-                    raise ValueError("JSONが見つかりません")
-                
-            print(f"Extracted JSON: {json_str}")  # デバッグ用
-        except Exception as e:
-            print(f"Error parsing JSON: {e}, Response: {response_text}")
-            return "予定情報の抽出に失敗しました。もう少し詳しく教えていただけますか？"
+        response = agent_executor.invoke({
+            "input": modified_message,
+            "user_id": user_id,  # 実際のユーザーIDを渡す
+            "tools": tools,
+            "tool_names": tool_names
+        })
         
-        action = parsed_data.get("action", "")
+        # 応答をチェックして、ツール呼び出しがそのまま出力されていないか確認
+        output = response["output"]
+        if output.startswith("tools.") or "(" in output and ")" in output and "=" in output:
+            # ツール呼び出しと思われる文字列が含まれている場合は、汎用的なメッセージに置き換える
+            return "申し訳ありません。処理中にエラーが発生しました。もう一度お試しください。"
         
-        if action == "create":
-            event_id = register_calendar_event(
-                user_id=user_id,
-                start_time=parsed_data.get("datetime_start"),
-                end_time=parsed_data.get("datetime_end"),
-                title=parsed_data.get("title"),
-                location=parsed_data.get("location", ""),
-                description=parsed_data.get("description", "")
-            )
-            return f"予定「{parsed_data.get('title')}」を登録しました。"
-            
-        elif action == "read":
-            events = get_calendar_events(
-                user_id=user_id,
-                start_time=parsed_data.get("datetime_start"),
-                end_time=parsed_data.get("datetime_end")
-            )
-            
-            if not events:
-                return "指定された期間の予定はありません。"
-            
-            events_text = "以下の予定が見つかりました：\n"
-            for i, event in enumerate(events, 1):
-                events_text += f"{i}. {event['summary']} ({event['start']['dateTime']}〜{event['end']['dateTime']})\n"
-            return events_text
-            
-        elif action == "update":
-            success = update_calendar_event(
-                user_id=user_id,
-                event_query={
-                    "title": parsed_data.get("title"),
-                    "start_time": parsed_data.get("datetime_start")
-                },
-                updated_data={
-                    "title": parsed_data.get("title"),
-                    "start_time": parsed_data.get("datetime_start"),
-                    "end_time": parsed_data.get("datetime_end"),
-                    "location": parsed_data.get("location", ""),
-                    "description": parsed_data.get("description", "")
-                }
-            )
-            
-            if success:
-                return f"予定「{parsed_data.get('title')}」を更新しました。"
-            else:
-                return "予定の更新に失敗しました。該当する予定が見つからないか、複数の候補があります。"
-            
-        elif action == "delete":
-            success = delete_calendar_event(
-                user_id=user_id,
-                event_query={
-                    "title": parsed_data.get("title"),
-                    "start_time": parsed_data.get("datetime_start")
-                }
-            )
-            
-            if success:
-                return f"予定「{parsed_data.get('title')}」を削除しました。"
-            else:
-                return "予定の削除に失敗しました。該当する予定が見つからないか、複数の候補があります。"
-            
-        else:
-            return "予定の操作種別（作成/参照/更新/削除）が特定できませんでした。もう少し詳しく教えていただけますか？"
-            
+        # エラーメッセージをチェック
+        if "ユーザーの認証情報が見つかりません" in output:
+            auth_url = f"{os.getenv('APP_BASE_URL')}/google/authorize?user_id={user_id}"
+            return f"Googleカレンダーへのアクセス許可が必要です。以下のリンクから認証を行ってください。\n{auth_url}"
+        
+        return output
     except Exception as e:
-        print(f"Error processing message: {e}")
-        return "申し訳ありません。メッセージ処理中にエラーが発生しました。後でもう一度お試しください。"
+        print(f"エージェント実行中にエラーが発生: {e}")
+        return f"申し訳ありません。処理中にエラーが発生しました: {str(e)}"

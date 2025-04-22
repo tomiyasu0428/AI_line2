@@ -1,19 +1,15 @@
 import os
-import re
-from fastapi import APIRouter, Request, HTTPException, BackgroundTasks, Depends
+from fastapi import APIRouter, Request, BackgroundTasks
 from linebot.v3 import WebhookHandler
-from linebot.v3.messaging import Configuration, ApiClient, MessagingApi, ReplyMessageRequest, TextMessage
-from linebot.v3.webhooks import MessageEvent, TextMessageContent, PostbackEvent
+from linebot.v3.webhooks import MessageEvent, PostbackEvent
 from linebot.v3.exceptions import InvalidSignatureError
+from linebot.v3.messaging import Configuration, ApiClient, MessagingApi, ReplyMessageRequest, TextMessage
+from linebot.v3.webhooks.models import TextMessageContent
+from linebot.v3.webhook import WebhookParser
 
 from app.services.ai_processor import process_user_message
+from app.services.group_scheduler import find_available_times, create_voting_message, process_vote, close_voting
 from app.services.google_calendar import check_user_auth_status
-from app.services.group_scheduler import (
-    find_available_times,
-    create_voting_message,
-    process_vote,
-    close_voting,
-)
 
 router = APIRouter(prefix="/line", tags=["line"])
 
@@ -26,88 +22,93 @@ handler = WebhookHandler(line_secret)
 
 @router.post("/callback")
 async def callback(request: Request, background_tasks: BackgroundTasks):
-    signature = request.headers.get("X-Line-Signature", "")
+    signature = request.headers.get('X-Line-Signature', '')
     body = await request.body()
-    body_text = body.decode("utf-8")
-
+    body_decode = body.decode('utf-8')
+    
+    # デバッグ情報を出力
+    print(f"LINE Webhook received - Signature: {signature[:10]}...")
+    print(f"LINE_CHANNEL_SECRET: {line_secret[:5]}...")
+    print(f"Body length: {len(body_decode)} bytes")
+    
     try:
-        handler.handle(body_text, signature)
-    except InvalidSignatureError:
-        raise HTTPException(status_code=400, detail="Invalid signature")
+        # WebhookHandlerに処理を委譲する代わりに、イベントを解析して非同期処理
+        parser = WebhookParser(line_secret)
+        events = parser.parse(body_decode, signature)
+        print(f"Successfully parsed {len(events)} events")
+        for event in events:
+            if isinstance(event, MessageEvent) and isinstance(event.message, TextMessageContent):
+                # バックグラウンドタスクとしてメッセージ処理を実行
+                background_tasks.add_task(process_message_async, event)
+    except InvalidSignatureError as e:
+        print(f"Invalid signature error: {e}")
+        # 署名エラーでも200を返す（LINEプラットフォームの要件）
+        return {"message": "OK"}
+    except Exception as e:
+        print(f"Unexpected error in LINE webhook: {e}")
+        # その他のエラーでも200を返す
+        return {"message": "OK"}
+    
+    # 即座に200 OKを返す
+    return {"message": "OK"}
 
-    return "OK"
+async def process_message_async(event):
+    """メッセージを非同期で処理する"""
+    try:
+        user_id = event.source.user_id
+        user_message = event.message.text
+        
+        # ユーザーの認証状態を確認
+        is_authenticated = check_user_auth_status(user_id)
+        
+        if not is_authenticated and any(keyword in user_message for keyword in ["カレンダー", "予定", "会議", "ミーティング", "スケジュール"]):
+            auth_url = f"{os.getenv('APP_BASE_URL')}/google/authorize?user_id={user_id}"
+            reply_text = f"Googleカレンダーへのアクセス許可が必要です。以下のリンクから認証を行ってください。\n{auth_url}"
+            with ApiClient(configuration) as api_client:
+                line_bot_api = MessagingApi(api_client)
+                reply_message_request = ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text=reply_text)]
+                )
+                line_bot_api.reply_message(reply_message_request)
+        elif is_authenticated:
+            # AIプロセッサを使用してメッセージを処理
+            response = process_user_message(user_id, user_message)
+            with ApiClient(configuration) as api_client:
+                line_bot_api = MessagingApi(api_client)
+                reply_message_request = ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text=response)]
+                )
+                line_bot_api.reply_message(reply_message_request)
+        else:
+            with ApiClient(configuration) as api_client:
+                line_bot_api = MessagingApi(api_client)
+                reply_message_request = ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text="こんにちは！カレンダーの予定を管理するには、「予定」「スケジュール」などのキーワードを含むメッセージを送ってください。")]
+                )
+                line_bot_api.reply_message(reply_message_request)
+    except Exception as e:
+        print(f"Error in async message processing: {e}")
+        try:
+            with ApiClient(configuration) as api_client:
+                line_bot_api = MessagingApi(api_client)
+                reply_message_request = ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text="申し訳ありません。メッセージ処理中にエラーが発生しました。後でもう一度お試しください。")]
+                )
+                line_bot_api.reply_message(reply_message_request)
+        except Exception:
+            # リプライトークンの有効期限が切れている可能性がある
+            pass
 
 
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_message(event):
-    user_id = event.source.user_id
-    user_message = event.message.text
-
-    with ApiClient(configuration) as api_client:
-        line_bot_api = MessagingApi(api_client)
-
-        if hasattr(event.source, "group_id"):
-            group_id = event.source.group_id
-
-            schedule_match = re.match(r"日程調整\s+(.+)", user_message)
-            if schedule_match:
-                event_title = schedule_match.group(1)
-
-                is_authenticated = check_user_auth_status(user_id)
-                if not is_authenticated:
-                    auth_url = f"{os.getenv('APP_BASE_URL')}/google/authorize?user_id={user_id}"
-                    reply_text = f"Googleカレンダーへのアクセス許可が必要です。以下のリンクから認証を行ってください。\n{auth_url}"
-                    line_bot_api.reply_message(
-                        ReplyMessageRequest(
-                            reply_token=event.reply_token, messages=[TextMessage(text=reply_text)]
-                        )
-                    )
-                    return
-
-                participant_ids = []
-
-                import datetime
-
-                start_date = datetime.datetime.now().isoformat()
-                end_date = (datetime.datetime.now() + datetime.timedelta(days=7)).isoformat()
-
-                available_times = find_available_times(
-                    organizer_id=user_id,
-                    participant_ids=participant_ids,
-                    start_date=start_date,
-                    end_date=end_date,
-                    duration_minutes=60,
-                )
-
-                if not available_times:
-                    reply_text = "指定された期間内に全員が参加可能な時間が見つかりませんでした。"
-                    line_bot_api.reply_message(
-                        ReplyMessageRequest(
-                            reply_token=event.reply_token, messages=[TextMessage(text=reply_text)]
-                        )
-                    )
-                    return
-
-                voting_message = create_voting_message(
-                    group_id=group_id, event_title=event_title, available_times=available_times
-                )
-
-                line_bot_api.reply_message(
-                    ReplyMessageRequest(reply_token=event.reply_token, messages=[voting_message])
-                )
-                return
-
-        is_authenticated = check_user_auth_status(user_id)
-
-        if not is_authenticated and any(keyword in user_message for keyword in ["カレンダー", "予定", "会議", "ミーティング", "スケジュール"]):
-            auth_url = f"{os.getenv('APP_BASE_URL')}/google/authorize?user_id={user_id}"
-            reply_text = f"Googleカレンダーへのアクセス許可が必要です。以下のリンクから認証を行ってください。\n{auth_url}"
-        else:
-            reply_text = process_user_message(user_id, user_message)
-
-        line_bot_api.reply_message(
-            ReplyMessageRequest(reply_token=event.reply_token, messages=[TextMessage(text=reply_text)])
-        )
+    # この関数はWebhookHandlerから呼び出されるが、実際の処理は行わない
+    # 処理はcallbackエンドポイントで直接行う
+    pass
 
 
 @handler.add(PostbackEvent)

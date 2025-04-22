@@ -19,9 +19,14 @@ def check_user_auth_status(user_id: str) -> bool:
 def get_google_calendar_service(user_id: str):
     """Google Calendar APIのサービスオブジェクトを取得する"""
     try:
+        print(f"Google Calendar サービス取得 - ユーザーID: {user_id}")
         token_info = get_user_tokens(user_id)
         if not token_info:
+            print(f"ユーザーID '{user_id}' の認証情報が見つかりません")
             raise ValueError("ユーザーの認証情報が見つかりません")
+        
+        print(f"トークン情報取得成功 - アクセストークン: {token_info.get('token')[:10]}...")
+        print(f"リフレッシュトークン: {token_info.get('refresh_token')[:10] if token_info.get('refresh_token') else 'なし'}")
         
         credentials = Credentials(
             token=token_info.get("token"),

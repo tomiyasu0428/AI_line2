@@ -32,6 +32,7 @@ async def authorize(user_id: str):
     authorization_url, state = flow.authorization_url(
         access_type="offline",
         include_granted_scopes="true",
+        prompt="consent",  # 毎回同意画面を表示し、リフレッシュトークンを確実に取得
         state=user_id
     )
     
@@ -54,6 +55,14 @@ async def oauth2callback(request: Request):
     
     flow.fetch_token(code=code)
     credentials = flow.credentials
+    
+    # デバッグ情報を出力
+    print(f"OAuth2コールバック - ユーザーID: {state}")
+    print(f"取得したトークン情報:")
+    print(f"  - アクセストークン: {credentials.token[:10]}...")
+    print(f"  - リフレッシュトークン: {credentials.refresh_token[:10] if credentials.refresh_token else 'なし'}")
+    print(f"  - トークンURI: {credentials.token_uri}")
+    print(f"  - スコープ: {credentials.scopes}")
     
     user_id = state
     token_info = {
