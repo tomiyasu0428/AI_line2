@@ -1,9 +1,7 @@
-```
-#アプリ開発100日チャレンジDay71🔥
+#アプリ開発100日チャレンジDay72🔥
 
-タイトル： AI予定管理秘書LINE Bot
+タイトル： AI予定管理秘書LINE Bot - ver2
 
-概要：LangChainとGemini APIを活用。LINEから自然言語で予定の作成・確認・更新ができるAI秘書。Google Calendarと連携し、OAuth認証で安全にアクセス。SQLiteでトークン管理を実装。
+概要：LangChainとGemini APIを活用したLINE Bot。会話でエラーなく予定を設定できるように微調整
 
-感想：LINEのWebhookとGoogle Calendar APIの連携は難しかったけど、認証フローが完成して感動！次はAIの応答精度を上げたい。
-```
+感想：LINEでの会話の文脈を理解できていないので、まだうまくいっていない。どうやるんだろ。

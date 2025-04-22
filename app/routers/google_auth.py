@@ -75,4 +75,53 @@ async def oauth2callback(request: Request):
     }
     save_user_tokens(user_id, token_info)
     
-    return {"message": "認証が完了しました。LINEに戻って操作を続けてください。"}
+    # HTMLレスポンスを返す（LINEに戻るための指示を含む）
+    html_content = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>認証完了</title>
+        <meta name="viewport" content="width=device-width, initial-scale=1">
+        <style>
+            body {
+                font-family: Arial, sans-serif;
+                margin: 20px;
+                line-height: 1.6;
+                text-align: center;
+            }
+            .container {
+                max-width: 600px;
+                margin: 0 auto;
+                padding: 20px;
+                border: 1px solid #ddd;
+                border-radius: 10px;
+                box-shadow: 0 0 10px rgba(0,0,0,0.1);
+            }
+            h1 {
+                color: #4CAF50;
+            }
+            .button {
+                display: inline-block;
+                background-color: #4CAF50;
+                color: white;
+                padding: 10px 20px;
+                text-align: center;
+                text-decoration: none;
+                font-size: 16px;
+                margin: 20px 0;
+                border-radius: 5px;
+                cursor: pointer;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>認証が完了しました</h1>
+            <p>Googleカレンダーへのアクセス許可が正常に設定されました。</p>
+            <p>LINEアプリに戻って、カレンダー機能を使用してください。</p>
+            <p>例えば、「今日の予定を教えて」や「明日の午後3時から会議を設定して」などと入力できます。</p>
+        </div>
+    </body>
+    </html>
+    """
+    return Response(content=html_content, media_type="text/html")

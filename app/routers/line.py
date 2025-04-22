@@ -6,7 +6,7 @@ from linebot.v3.messaging import Configuration, ApiClient, MessagingApi, ReplyMe
 from linebot.v3.webhooks.models import TextMessageContent
 from linebot.v3.webhook import WebhookParser
 
-from app.services.ai_processor import process_user_message
+from app.services.langgraph_processor import process_user_message
 from app.services.group_scheduler import process_vote, close_voting
 from app.services.google_calendar import check_user_auth_status
 

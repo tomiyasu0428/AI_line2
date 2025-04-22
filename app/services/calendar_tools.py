@@ -92,14 +92,26 @@ def update_event_tool(user_id: str, event_id: str, start_time: str = None, end_t
     Returns:
         更新結果を示すメッセージ
     """
+    # event_queryの形式に変換
+    event_query = {"id": event_id}
+    
+    # updated_dataの形式に変換
+    updated_data = {}
+    if start_time:
+        updated_data["start_time"] = start_time
+    if end_time:
+        updated_data["end_time"] = end_time
+    if title:
+        updated_data["title"] = title
+    if location:
+        updated_data["location"] = location
+    if description:
+        updated_data["description"] = description
+    
     update_calendar_event(
         user_id=user_id,
-        event_id=event_id,
-        start_time=start_time,
-        end_time=end_time,
-        title=title,
-        location=location,
-        description=description
+        event_query=event_query,
+        updated_data=updated_data
     )
     
     return f"イベントID: {event_id}が更新されました。"
@@ -117,7 +129,9 @@ def delete_event_tool(user_id: str, event_id: str) -> str:
     Returns:
         削除結果を示すメッセージ
     """
-    delete_calendar_event(user_id=user_id, event_id=event_id)
+    # event_queryの形式に変換
+    event_query = {"id": event_id}
+    delete_calendar_event(user_id=user_id, event_query=event_query)
     return f"イベントID: {event_id}が削除されました。"
 
 
