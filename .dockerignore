@@ -1,0 +1,13 @@
+.venv
+__pycache__
+*.pyc
+.git
+.gitignore
+.env
+.env.example
+line-manageai-firebase-adminsdk-fbsvc-880ade1527.json
+README.md
+*.db
+.pytest_cache
+.coverage
+htmlcov/

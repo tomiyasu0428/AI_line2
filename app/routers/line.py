@@ -18,7 +18,7 @@ line_secret = os.getenv("LINE_CHANNEL_SECRET", "dummy_secret")
 configuration = Configuration(access_token=line_token)
 
 
-@router.post("/callback")
+@router.post("/webhook")
 async def callback(request: Request, background_tasks: BackgroundTasks):
     signature = request.headers.get('X-Line-Signature', '')
     body = await request.body()
