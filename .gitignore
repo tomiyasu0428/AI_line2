@@ -3,4 +3,4 @@ __pycache__
 .env.example
 .env
 line-manageai-firebase-adminsdk-fbsvc-880ade1527.json
-
+firebase-credentials.json
