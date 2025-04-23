@@ -1,0 +1,17 @@
+
+            digraph G {
+                rankdir=LR;
+                node [shape=box, style=filled, color=lightblue];
+                
+                START [shape=oval, color=green];
+                END [shape=oval, color=red];
+                
+                START -> parse_input;
+                parse_input -> retrieve_context;
+                retrieve_context -> use_tools [label="use_tools"];
+                retrieve_context -> generate_response [label="generate_response"];
+                use_tools -> update_chat_history;
+                generate_response -> update_chat_history;
+                update_chat_history -> END;
+            }
+            
